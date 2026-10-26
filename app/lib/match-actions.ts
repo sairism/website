@@ -1,20 +1,29 @@
 'use server';
 
 /**
- * Public, read-only server action for lazy-loading match pages from client
- * components (public schedule + admin match list). Untrusted identifiers and
- * enums are validated here since this is a network-facing entry point; sort
- * and limit clamping live in getMatchesPage itself.
+ * Server actions for lazy-loading match pages from client components. Untrusted
+ * identifiers and enums are validated here since these are network-facing entry
+ * points; sort and limit clamping live in getMatchesPage itself.
+ *
+ * `fetchMatchesPage` is the public schedule's action: anyone can call it, so it
+ * strips the outcome of every match in a season staff have not published
+ * (the client-supplied season id is never trusted to decide that).
+ * `fetchStaffMatchesPage` is the admin list's action and returns everything,
+ * but only to staff allowed into Matches.
  */
-import { getMatchesPage } from './db/queries';
+import { getMatchesPage, getMatchTabCounts, getPublicMatchesPage } from './db/queries';
+import { getStaffForAdminSection } from './auth';
 import {
   COMBINED_DIVISION,
   DIVISIONS,
+  isMatchTab,
   toMatchesPageDto,
   type MatchCursor,
   type MatchPageResponse,
   type MatchSort,
   type MatchStatus,
+  type MatchTab,
+  type MatchTabCounts,
 } from './db/match-page';
 import * as schema from './db/schema';
 
@@ -25,6 +34,8 @@ export interface MatchPageRequest {
   seasonId?: string;
   division?: string;
   status?: string;
+  /** Staff tab (needs-results | upcoming | completed | all); ignored by the public action. */
+  tab?: string;
   search?: string;
   from?: string;
   to?: string;
@@ -42,7 +53,7 @@ const dateOrUndefined = (v: string | undefined) => {
   return Number.isNaN(d.getTime()) ? undefined : d;
 };
 
-export async function fetchMatchesPage(request: MatchPageRequest): Promise<MatchPageResponse> {
+function toParams(request: MatchPageRequest) {
   const cursor =
     request.cursor &&
     UUID_RE.test(request.cursor.id) &&
@@ -56,13 +67,14 @@ export async function fetchMatchesPage(request: MatchPageRequest): Promise<Match
       ? request.division
       : undefined;
 
-  const page = await getMatchesPage({
+  return {
     gameId: uuidOrUndefined(request.gameId),
     seasonId: uuidOrUndefined(request.seasonId),
     division: validDivision,
     status: (schema.matchStatusEnum.enumValues as readonly string[]).includes(request.status ?? '')
       ? (request.status as MatchStatus)
       : undefined,
+    tab: (isMatchTab(request.tab) ? request.tab : undefined) as MatchTab | undefined,
     search: request.search?.slice(0, 100) || undefined,
     from: dateOrUndefined(request.from),
     to: dateOrUndefined(request.to),
@@ -70,7 +82,33 @@ export async function fetchMatchesPage(request: MatchPageRequest): Promise<Match
     sort: request.sort as MatchSort | undefined,
     cursor,
     limit: request.limit,
-  });
+  };
+}
 
-  return toMatchesPageDto(page);
+/**
+ * Public: outcomes of unpublished seasons are redacted server-side. The status
+ * filter is ignored here (the public list never sends one) because filtering a
+ * hidden season by `forfeit` would reveal which matches were forfeits. The
+ * staff tab filter is ignored for the same reason (Completed would do it too).
+ */
+export async function fetchMatchesPage(request: MatchPageRequest): Promise<MatchPageResponse> {
+  return toMatchesPageDto(await getPublicMatchesPage({ ...toParams(request), status: undefined, tab: undefined }));
+}
+
+/** Staff only: unredacted, for Admin -> Matches. */
+export async function fetchStaffMatchesPage(request: MatchPageRequest): Promise<MatchPageResponse> {
+  if (!(await getStaffForAdminSection('/admin/matches'))) throw new Error('Forbidden');
+  // `now` is the server's clock: "past" is never taken from the client.
+  return toMatchesPageDto(await getMatchesPage({ ...toParams(request), now: new Date() }));
+}
+
+/**
+ * Staff only: per-tab totals for the same facets as the list (game, season,
+ * division, search). Tab, sort and cursor in the request are ignored; counts
+ * are always over every page of each tab.
+ */
+export async function fetchStaffMatchTabCounts(request: MatchPageRequest): Promise<MatchTabCounts> {
+  if (!(await getStaffForAdminSection('/admin/matches'))) throw new Error('Forbidden');
+  const { gameId, seasonId, division, search } = toParams(request);
+  return getMatchTabCounts({ gameId, seasonId, division, search, now: new Date() });
 }

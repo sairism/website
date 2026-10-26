@@ -20,6 +20,7 @@
     "db:ingest:gold": "npx tsx --env-file-if-exists=.env db/seed-gold.ts",
     "db:ingest:leadership": "npx tsx --env-file-if-exists=.env db/seed-leadership.ts",
     "db:backfill:leadership": "npx tsx --env-file-if-exists=.env db/backfill-leadership.ts",
+    "db:backfill:gallery-thumbnails": "npx tsx --conditions=react-server --env-file-if-exists=.env db/backfill-gallery-thumbnails.ts",
     "db:backup:clean": "npx tsx db/backup-clean.ts",
     "db:storage:clean": "npx tsx --env-file-if-exists=.env db/storage-clean.ts",
     "prepare": "node scripts/prepare-hooks.mjs || true"
@@ -33,28 +34,31 @@
     "embla-carousel-auto-scroll": "^8.6.0",
     "embla-carousel-react": "^8.6.0",
     "framer-motion": "^12.33.0",
-    "next": "^16.3.8",
+    "next": "^16.4.3",
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "6.3.289",
     "postgres": "^3.4.9",
     "react": "19.2.3",
     "react-aria": "^3.50.0",
     "react-aria-components": "^1.19.0",
     "react-dom": "19.2.3",
     "react-icons": "^5.5.0",
-    "server-only": "^0.0.1"
+    "server-only": "^0.0.1",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^4.1.12",
     "drizzle-kit": "^0.31.10",
     "eslint": "^9",
     "eslint-config-next": "16.1.0",
     "playwright": "^1.62.1",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "overrides": {
     "ajv": "^6.14.0",
@@ -68,6 +72,7 @@
     "picomatch@2": "^2.3.2",
     "picomatch@4": "^4.0.4",
     "postcss": "^8.5.10",
-    "sharp": "^0.35.4"
+    "sharp": "^0.35.5",
+    "source-map-js": "^1.2.2"
   }
 }

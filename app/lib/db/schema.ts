@@ -69,7 +69,7 @@ export const members = pgTable('members', {
   // admin-created member collide with the first on a shared NULL.
   //
   // For the same reason, migration 0026 only backfills this where the derived key
-  // is unambiguous: createMember has no duplicate check, so two same-named members
+  // is unambiguous: the admin UI (createPlayer) has no duplicate check, so two same-named members
   // at one school are legal, and stamping both would abort the migration on a
   // duplicate key — as well as claiming an archive origin neither row has.
   memberKey: text('member_key'),
@@ -107,6 +107,18 @@ export const seasons = pgTable('seasons', {
   // what every season but that one actually is; the exceptions are listed in
   // COMBINED_STANDINGS in sharepoint/normalize_gold.py, with their evidence.
   standingsFormat: text('standings_format').default('divided').notNull(),
+  // Null = unlocked. When set, school managers cannot change any roster of this
+  // season (create, delete, enroll, remove, role change, emergency swap, invite
+  // approval onto a roster); staff admins still can. Kept per season row so that
+  // locking one game's season never affects another game's.
+  rostersLockedAt: timestamp('rosters_locked_at'),
+  // Null = this season's match outcomes (scores, results, standings, records)
+  // are HIDDEN on every public view; set = published. Historical imports and
+  // in-progress seasons have incomplete results, so the public site must not
+  // present partial numbers as truth. Staff flip it per season from League
+  // Setup; admin and portal views always see everything. Migration 0051
+  // stamped every already-archived (inactive) season so its results stay public.
+  outcomesFinalizedAt: timestamp('outcomes_finalized_at'),
   ...auditColumns,
 }, (table) => [
   index('seasons_game_id_idx').on(table.gameId),
@@ -204,6 +216,12 @@ export const matches = pgTable('matches', {
   status: matchStatusEnum('status').default('scheduled').notNull(),
   mvp: text('mvp'), // match MVP as recorded in season sheets, e.g. 'Kyle "Kuli" Ng'
   notes: text('notes'), // reschedules, DQs, data-quality caveats
+  // Regular-season games count toward W-L. Playoff series are still matches
+  // (they show on the schedule) but they must not rewrite the season table:
+  // a bracket champion and a regular-season champion are different claims.
+  // Default true so admin-created fixtures and every archive row from before
+  // this column keep counting. The gold CSV owns the value for archive rows.
+  countsForStandings: boolean('counts_for_standings').default(true).notNull(),
   // Natural key for the gold archive. Format:
   //   `${season}|${game_slug}|${home_school_slug}|${home_division}` +
   //   `|${away_school_slug}|${away_division}|${scheduled_at}#${n}`
@@ -231,6 +249,70 @@ export const matches = pgTable('matches', {
   index('matches_home_roster_id_idx').on(table.homeRosterId),
   index('matches_away_roster_id_idx').on(table.awayRosterId),
   uniqueIndex('matches_source_key_unique_idx').on(table.sourceKey),
+]).enableRLS();
+
+// A school manager's request to move a scheduled match (rules page 4.3). It only ever proposes:
+// the match keeps its time until staff approve. See spec-032 for the status flow.
+export const matchRescheduleRequests = pgTable('match_reschedule_requests', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  matchId: uuid('match_id')
+    .references(() => matches.id, { onDelete: 'cascade' })
+    .notNull(),
+  requestedBySchoolId: uuid('requested_by_school_id')
+    .references(() => schools.id, { onDelete: 'cascade' })
+    .notNull(),
+  requestedByUserId: uuid('requested_by_user_id').notNull(), // Supabase auth.users.id
+  reason: text('reason').notNull(),
+  // 'pending_opponent' | 'pending_requester' | 'pending_staff' | 'approved' | 'declined_opponent'
+  // | 'declined_requester' | 'declined_staff' | 'cancelled'; the allowed set is enforced by a
+  // CHECK and mirrored in reschedule-rules.ts.
+  status: text('status').default('pending_opponent').notNull(),
+  // Fixed at creation: less than 72 hours before the match's start, so the opponent may decline
+  // at their discretion. Stored so the answer survives the match later being moved.
+  isLate: boolean('is_late').notNull(),
+  // The match time the request was made against. Approval refuses if the match has moved since.
+  originalScheduledAt: timestamp('original_scheduled_at').notNull(),
+  // Set when the opponent accepts one of the proposed times.
+  acceptedOptionId: uuid('accepted_option_id'),
+  // The opponent's answer to the requester's times: an accept, a decline or a counter-offer.
+  opponentRespondedByUserId: uuid('opponent_responded_by_user_id'),
+  opponentRespondedAt: timestamp('opponent_responded_at'),
+  // The requester's answer to a counter-offer (an accept or a decline).
+  counterRespondedByUserId: uuid('counter_responded_by_user_id'),
+  counterRespondedAt: timestamp('counter_responded_at'),
+  decidedByStaffId: text('decided_by_staff_id'),
+  decidedAt: timestamp('decided_at'),
+  staffNote: text('staff_note'),
+  ...auditColumns,
+}, (t) => [
+  index('match_reschedule_requests_match_id_idx').on(t.matchId),
+  index('match_reschedule_requests_school_id_idx').on(t.requestedBySchoolId),
+  index('match_reschedule_requests_status_idx').on(t.status),
+  // At most one open request per match: a second attempt must wait for the first to resolve.
+  uniqueIndex('match_reschedule_requests_one_open_per_match_idx')
+    .on(t.matchId)
+    .where(sql`status in ('pending_opponent', 'pending_requester', 'pending_staff')`),
+  check(
+    'match_reschedule_requests_status_check',
+    sql`${t.status} in ('pending_opponent', 'pending_requester', 'pending_staff', 'approved', 'declined_opponent', 'declined_requester', 'declined_staff', 'cancelled')`
+  ),
+]).enableRLS();
+
+// The times proposed on a request: the requester's first set (2 to 5, at least an hour apart;
+// enforced in the action) and, if the opponent counters, one more set of their own.
+export const matchRescheduleOptions = pgTable('match_reschedule_options', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  requestId: uuid('request_id')
+    .references(() => matchRescheduleRequests.id, { onDelete: 'cascade' })
+    .notNull(),
+  proposedAt: timestamp('proposed_at').notNull(),
+  // Which side proposed it. Only the other side's times can be picked: the opponent picks from
+  // the 'requester' set, and after a counter-offer the requester picks from the 'opponent' set.
+  proposedBy: text('proposed_by').default('requester').notNull(),
+}, (t) => [
+  index('match_reschedule_options_request_id_idx').on(t.requestId),
+  uniqueIndex('match_reschedule_options_request_time_idx').on(t.requestId, t.proposedAt),
+  check('match_reschedule_options_proposed_by_check', sql`${t.proposedBy} in ('requester', 'opponent')`),
 ]).enableRLS();
 
 // --- TOURNAMENTS ---
@@ -392,7 +474,9 @@ export const leadershipTerms = pgTable('leadership_terms', {
     .where(sql`deleted_at IS NULL`),
 ]).enableRLS();
 
-// View for rosters with dynamically computed standings (wins and losses)
+// View for rosters with dynamically computed standings (wins and losses).
+// counts_for_standings is false on playoff series, which stay on the schedule
+// and out of this table.
 export const rosterStandings = pgView('roster_standings', {
   id: uuid('id'),
   teamId: uuid('team_id'),
@@ -405,8 +489,8 @@ export const rosterStandings = pgView('roster_standings', {
 }).with({ securityInvoker: true }).as(sql`
   SELECT
     r.id, r.team_id, r.name, r.division, r.created_at, r.updated_at,
-    (SELECT COUNT(*) FROM matches m WHERE (m.home_roster_id = r.id AND m.home_score > m.away_score AND m.status IN ('completed', 'forfeit')) OR (m.away_roster_id = r.id AND m.away_score > m.home_score AND m.status IN ('completed', 'forfeit')))::int as wins,
-    (SELECT COUNT(*) FROM matches m WHERE (m.home_roster_id = r.id AND m.home_score < m.away_score AND m.status IN ('completed', 'forfeit')) OR (m.away_roster_id = r.id AND m.away_score < m.home_score AND m.status IN ('completed', 'forfeit')))::int as losses
+    (SELECT COUNT(*) FROM matches m WHERE m.counts_for_standings AND ((m.home_roster_id = r.id AND m.home_score > m.away_score AND m.status IN ('completed', 'forfeit')) OR (m.away_roster_id = r.id AND m.away_score > m.home_score AND m.status IN ('completed', 'forfeit'))))::int as wins,
+    (SELECT COUNT(*) FROM matches m WHERE m.counts_for_standings AND ((m.home_roster_id = r.id AND m.home_score < m.away_score AND m.status IN ('completed', 'forfeit')) OR (m.away_roster_id = r.id AND m.away_score < m.home_score AND m.status IN ('completed', 'forfeit'))))::int as losses
   FROM rosters r
 `);
 
@@ -477,6 +561,10 @@ export const galleryImages = pgTable('gallery_images', {
   displayOrder: integer('display_order').default(0).notNull(),
   isActive: boolean('is_active').default(true).notNull(),
   storageKey: text('storage_key'),
+  // Small WebP beside the full-size file; null until uploaded (or backfilled), in
+  // which case readers fall back to `src`. See app/lib/gallery-image-sources.ts.
+  thumbnailUrl: text('thumbnail_url'),
+  thumbnailStorageKey: text('thumbnail_storage_key'),
   deletedAt: timestamp('deleted_at'),
   deletedBy: text('deleted_by'),
   ...auditColumns,
@@ -728,9 +816,12 @@ export const schoolManagers = pgTable('school_managers', {
   userId: uuid('user_id').notNull(), // Supabase auth.users.id
   memberId: uuid('member_id').references(() => members.id, { onDelete: 'set null' }),
   managedGames: text('managed_games').array(), // null = all games; ['valorant'] = scoped
-  academicYear: text('academic_year').notNull(), // e.g. "2025-2026"
+  academicYear: text('academic_year').notNull(), // e.g. "2025-26" (YYYY-YY, equals the season name)
   isPrimaryContact: boolean('is_primary_contact').default(false).notNull(),
   isActive: boolean('is_active').default(true).notNull(),
+  // Set when this person ends the portal tour (finished or skipped). Null = not seen;
+  // existing rows are intentionally not backfilled so current managers see it once.
+  tourCompletedAt: timestamp('tour_completed_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().$onUpdate(() => new Date()).notNull(),
 }, (t) => [
@@ -739,12 +830,11 @@ export const schoolManagers = pgTable('school_managers', {
   index('school_managers_member_id_idx').on(t.memberId),
 ]).enableRLS();
 
-// 2. Single-Use Player & Manager Invite Tokens
+// 2. Single-Use Player Invite Tokens (School-manager invites live in manager_invites)
 export const playerInvites = pgTable('player_invites', {
   id: uuid('id').defaultRandom().primaryKey(),
   schoolId: uuid('school_id').references(() => schools.id, { onDelete: 'cascade' }).notNull(),
-  gameId: uuid('game_id').references(() => games.id, { onDelete: 'cascade' }),
-  role: text('role').default('player').notNull(), // 'player' | 'manager'
+  gameId: uuid('game_id').references(() => games.id, { onDelete: 'cascade' }).notNull(),
   tokenHash: text('token_hash').notNull().unique(), // SHA-256
   intendedFirstName: text('intended_first_name').notNull(),
   intendedLastName: text('intended_last_name').notNull(),
@@ -759,9 +849,31 @@ export const playerInvites = pgTable('player_invites', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
   index('player_invites_school_game_idx').on(t.schoolId, t.gameId),
-  index('player_invites_school_role_idx').on(t.schoolId, t.role),
   uniqueIndex('player_invites_token_hash_idx').on(t.tokenHash),
   index('player_invites_member_id_idx').on(t.memberId),
+]).enableRLS();
+
+// 2b. Single-Use School Manager Invite Tokens. Separate from player_invites
+// because a manager invite has no game and is never reviewed through the
+// roster approval queue.
+export const managerInvites = pgTable('manager_invites', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  schoolId: uuid('school_id').references(() => schools.id, { onDelete: 'cascade' }).notNull(),
+  tokenHash: text('token_hash').notNull().unique(), // SHA-256
+  intendedFirstName: text('intended_first_name').notNull(),
+  intendedLastName: text('intended_last_name').notNull(),
+  invitedByUserId: uuid('invited_by_user_id').notNull(),
+  status: text('status').default('pending').notNull(), // 'pending' | 'accepted' | 'rejected' | 'expired'
+  expiresAt: timestamp('expires_at').notNull(),
+  submittedAt: timestamp('submitted_at'),
+  reviewedAt: timestamp('reviewed_at'),
+  rejectionReason: text('rejection_reason'),
+  memberId: uuid('member_id').references(() => members.id, { onDelete: 'set null' }),
+  submissionDraft: jsonb('submission_draft'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  index('manager_invites_school_idx').on(t.schoolId),
+  index('manager_invites_member_id_idx').on(t.memberId),
 ]).enableRLS();
 
 // 3. Player Game & Community Identities
@@ -801,12 +913,48 @@ export const studentDemographics = pgTable('student_demographics', {
   index('student_demographics_member_id_idx').on(t.memberId),
 ]).enableRLS();
 
+// 5. Onboarding Consent Records (append-only audit trail of the Terms of Service
+// acknowledgment and, for participants under 18, the parent/guardian authorization
+// with electronic signature). Holds guardian PII: RLS on, no policies, service role only.
+export const onboardingConsents = pgTable('onboarding_consents', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  memberId: uuid('member_id').references(() => members.id, { onDelete: 'cascade' }).notNull(),
+  schoolId: uuid('school_id').references(() => schools.id, { onDelete: 'set null' }),
+  // Which invite table `inviteId` points at; no FK because it spans two tables.
+  inviteKind: text('invite_kind').notNull(), // 'player' | 'manager'
+  inviteId: uuid('invite_id').notNull(),
+  formVersion: text('form_version').notNull(),
+  isMinor: boolean('is_minor').notNull(),
+  ageAtSigning: integer('age_at_signing').notNull(),
+  tosAcknowledged: boolean('tos_acknowledged').notNull(),
+  participantLegalName: text('participant_legal_name').notNull(),
+  guardianFullName: text('guardian_full_name'),
+  guardianRelationship: text('guardian_relationship'),
+  guardianEmail: text('guardian_email'),
+  guardianSignature: text('guardian_signature'),
+  // Stamped by the server at submission; never taken from the client.
+  signedAt: timestamp('signed_at').defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex('onboarding_consents_invite_idx').on(t.inviteKind, t.inviteId),
+  index('onboarding_consents_member_id_idx').on(t.memberId),
+  check('onboarding_consents_invite_kind_check', sql`${t.inviteKind} in ('player', 'manager')`),
+  check('onboarding_consents_tos_check', sql`${t.tosAcknowledged} = true`),
+  check(
+    'onboarding_consents_minor_guardian_check',
+    sql`not ${t.isMinor} or (${t.guardianFullName} is not null and ${t.guardianRelationship} is not null and ${t.guardianEmail} is not null and ${t.guardianSignature} is not null)`
+  ),
+]).enableRLS();
+
 export type SchoolManager = typeof schoolManagers.$inferSelect;
 export type NewSchoolManager = typeof schoolManagers.$inferInsert;
 export type PlayerInvite = typeof playerInvites.$inferSelect;
 export type NewPlayerInvite = typeof playerInvites.$inferInsert;
+export type ManagerInvite = typeof managerInvites.$inferSelect;
+export type NewManagerInvite = typeof managerInvites.$inferInsert;
 export type PlayerIdentity = typeof playerIdentities.$inferSelect;
 export type NewPlayerIdentity = typeof playerIdentities.$inferInsert;
 export type StudentDemographics = typeof studentDemographics.$inferSelect;
 export type NewStudentDemographics = typeof studentDemographics.$inferInsert;
+export type OnboardingConsent = typeof onboardingConsents.$inferSelect;
+export type NewOnboardingConsent = typeof onboardingConsents.$inferInsert;
 

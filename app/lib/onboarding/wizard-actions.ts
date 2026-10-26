@@ -1,9 +1,12 @@
 'use server';
 
 import crypto from 'node:crypto';
-import { db } from '@/app/lib/db';
-import * as schema from '@/app/lib/db/schema';
-import { eq } from 'drizzle-orm';
+import {
+  findInviteByTokenHash,
+  findInviteForValidation,
+  updateInviteDraft,
+} from '@/app/lib/db/onboarding';
+import type { ConsentSubmission } from './consent';
 import type { GameIdentityPort, CommunityPlatformPort } from './ports';
 import { processOnboardingSubmission } from './wizard/submission-pipeline';
 
@@ -71,6 +74,8 @@ export interface PlayerOnboardingSubmission {
   legalFirstName: string;
   legalLastName: string;
   graduationYear: number;
+  /** Manager only: season applied for, e.g. "2026-27". */
+  academicYear?: string;
   password?: string;
   riotId: string;
   discordUsername: string;
@@ -94,6 +99,8 @@ export interface PlayerOnboardingSubmission {
     [key: string]: any;
   };
   codeOfConductAccepted: boolean;
+  /** Terms of Service acknowledgment and, for under-18s, the guardian authorization. Validated server-side. */
+  consent: ConsentSubmission;
 }
 
 export interface SubmitPlayerOnboardingOptions {
@@ -127,6 +134,8 @@ const SENSITIVE_DEMOGRAPHIC_KEYS = new Set([
   'surveyDetails',
   'birthDate',
   'password',
+  // Guardian PII and signature are collected at final submit only, never persisted in the draft.
+  'consent',
 ]);
 
 /**
@@ -165,21 +174,7 @@ export async function validateInviteToken(
 
   const tokenHash = crypto.createHash('sha256').update(token.trim()).digest('hex');
 
-  const [row] = await db
-    .select({
-      invite: schema.playerInvites,
-      schoolId: schema.schools.id,
-      schoolName: schema.schools.name,
-      schoolSlug: schema.schools.slug,
-      gameId: schema.games.id,
-      gameName: schema.games.displayName,
-      gameSlug: schema.games.slug,
-    })
-    .from(schema.playerInvites)
-    .innerJoin(schema.schools, eq(schema.playerInvites.schoolId, schema.schools.id))
-    .leftJoin(schema.games, eq(schema.playerInvites.gameId, schema.games.id))
-    .where(eq(schema.playerInvites.tokenHash, tokenHash))
-    .limit(1);
+  const row = await findInviteForValidation(tokenHash);
 
   if (!row) {
     return {
@@ -189,7 +184,7 @@ export async function validateInviteToken(
     };
   }
 
-  const isManager = row.invite.role === 'manager';
+  const isManager = row.isManager;
   const resolvedGameId = row.gameId ?? null;
   const resolvedGameSlug = row.gameSlug || (isManager ? 'manager' : 'all');
   const resolvedGameName = row.gameName || (isManager ? 'School Manager' : 'All Games');
@@ -221,7 +216,7 @@ export async function validateInviteToken(
     return {
       valid: false,
       status: 'accepted',
-      role: row.invite.role as 'player' | 'manager',
+      role: isManager ? 'manager' : 'player',
       schoolName: row.schoolName,
       message: isManager
         ? 'You have successfully signed up! Your School Manager portal account is active.'
@@ -260,7 +255,7 @@ export async function validateInviteToken(
       valid: true,
       status: 'pending',
       inviteId: invite.id,
-      role: (row.invite.role as 'player' | 'manager') || 'player',
+      role: isManager ? 'manager' : 'player',
       isManager,
       intendedFirstName: invite.intendedFirstName,
       intendedLastName: invite.intendedLastName,
@@ -297,15 +292,11 @@ export async function saveOnboardingDraft(
 
   const tokenHash = crypto.createHash('sha256').update(token.trim()).digest('hex');
 
-  const [invite] = await db
-    .select()
-    .from(schema.playerInvites)
-    .where(eq(schema.playerInvites.tokenHash, tokenHash))
-    .limit(1);
-
-  if (!invite) {
+  const found = await findInviteByTokenHash(tokenHash);
+  if (!found) {
     throw new Error('Invalid or non-existent invite token');
   }
+  const { invite } = found;
 
   if (invite.status !== 'pending') {
     throw new Error(`Cannot save draft: invite status is ${invite.status}`);
@@ -315,12 +306,7 @@ export async function saveOnboardingDraft(
     throw new Error('Cannot save draft: invite link has expired');
   }
 
-  await db
-    .update(schema.playerInvites)
-    .set({
-      submissionDraft: sanitizeDraftData(draftData),
-    })
-    .where(eq(schema.playerInvites.id, invite.id));
+  await updateInviteDraft(found.kind, invite.id, sanitizeDraftData(draftData));
 
   return {
     success: true,

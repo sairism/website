@@ -21,6 +21,8 @@ interface GenerateInviteCardProps {
   schoolSlug: string;
   inviteGameId: string;
   setInviteGameId: (id: string) => void;
+  /** Games whose season is inactive: invites cannot be created for them (spec-028). */
+  viewOnlyGameIds?: string[];
   onInviteCreated: (invite: SchoolInviteItem) => void;
 }
 
@@ -30,6 +32,7 @@ export function GenerateInviteCard({
   schoolSlug,
   inviteGameId,
   setInviteGameId,
+  viewOnlyGameIds = [],
   onInviteCreated,
 }: GenerateInviteCardProps) {
   const [firstName, setFirstName] = useState('');
@@ -54,7 +57,10 @@ export function GenerateInviteCard({
     }
   };
 
+  const isViewOnly = viewOnlyGameIds.includes(inviteGameId);
+
   const handleGenerateInvite = () => {
+    if (isViewOnly) return;
     if (!firstName.trim() || !lastName.trim()) {
       setGenerateError('Please enter student first and last name.');
       return;
@@ -118,7 +124,10 @@ export function GenerateInviteCard({
   };
 
   return (
-    <div className="p-5 sm:p-6 rounded-2xl bg-zinc-900/80 border border-zinc-800 shadow-xl space-y-5">
+    <div
+      data-tour="invite-card"
+      className="min-w-0 p-4 sm:p-6 rounded-2xl bg-zinc-900/80 border border-zinc-800 shadow-xl space-y-5"
+    >
       <div className="flex items-center gap-2.5">
         <div className="p-2 rounded-lg bg-[#f4cccc]/10 text-[#f4cccc]">
           <HiOutlineUserPlus className="w-5 h-5" />
@@ -137,7 +146,7 @@ export function GenerateInviteCard({
       )}
 
       <div className="space-y-3.5">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 min-[420px]:grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-semibold text-zinc-300 mb-1">
               Student First Name
@@ -194,9 +203,15 @@ export function GenerateInviteCard({
           </select>
         </div>
 
+        {isViewOnly && (
+          <p role="status" className="text-xs text-amber-300">
+            This game&apos;s season is inactive and is view only, so new invites cannot be created.
+          </p>
+        )}
+
         <Button
           onPress={handleGenerateInvite}
-          isDisabled={isGenerating}
+          isDisabled={isGenerating || isViewOnly}
           className="w-full py-2.5 px-4 bg-[#f4cccc] hover:bg-[#e6b8b8] text-zinc-950 font-bold text-sm rounded-lg transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
         >
           {isGenerating ? (
@@ -213,7 +228,7 @@ export function GenerateInviteCard({
       {/* Generated Link Box */}
       {generatedInvite && (
         <div className="p-4 rounded-xl bg-zinc-950 border border-[#f4cccc]/30 space-y-2 animate-in fade-in duration-200">
-          <div className="flex items-center justify-between text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-xs">
             <span className="font-semibold text-[#f4cccc]">
               Invite for {generatedInvite.studentName}
             </span>
@@ -222,12 +237,12 @@ export function GenerateInviteCard({
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <input
               type="text"
               readOnly
               value={generatedInvite.url}
-              className="flex-1 px-3 py-1.5 text-xs bg-zinc-900 border border-zinc-800 rounded text-zinc-300 font-mono select-all focus:outline-none"
+              className="min-w-0 flex-1 px-3 py-1.5 text-xs bg-zinc-900 border border-zinc-800 rounded text-zinc-300 font-mono select-all focus:outline-none"
             />
             <Button
               onPress={() => handleCopyLink(generatedInvite.url)}

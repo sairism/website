@@ -17,15 +17,18 @@ import {
   type SchoolPoolPlayer,
   type RosterEligibilityResult,
 } from '@/app/lib/onboarding/portal-actions';
+import type { SchoolMatchItem } from '@/app/lib/school-matches';
 import { PortalHeader } from './components/PortalHeader';
 import { GameTabs, type GameItem } from './components/GameTabs';
 import { GenerateInviteCard } from './components/GenerateInviteCard';
 import { PendingApprovalsCard } from './components/PendingApprovalsCard';
 import { RostersSection } from './components/RostersSection';
 import { InvitesHistoryTable } from './components/InvitesHistoryTable';
+import { MatchesSection } from './components/MatchesSection';
 import { EmergencySwapModal } from './components/EmergencySwapModal';
 import { EnrollPlayerModal } from './components/EnrollPlayerModal';
 import { CreateRosterModal } from './components/CreateRosterModal';
+import PortalTour from './tour/PortalTour';
 
 export type { GameItem };
 
@@ -37,7 +40,24 @@ interface SchoolPortalClientProps {
   initialSubmissions: PendingSubmission[];
   initialRosters: SchoolRosterDetails[];
   initialPlayerPool?: SchoolPoolPlayer[];
+  /** The school's matches (read-only) and the server clock that splits them into Upcoming/Past. */
+  matches: SchoolMatchItem[];
+  matchesNowIso: string;
   selectedGameId?: string;
+  /** Season name(s) the manager is working in (matched by name); undefined for a staff admin. */
+  seasonLabel?: string;
+  /** Whether any of the manager's seasons is inactive (view-only, spec-028). */
+  hasInactiveSeason?: boolean;
+  /** Games whose season is inactive: every write control is disabled (server enforces it). */
+  viewOnlyGameIds?: string[];
+  /** Name(s) of the view-only season(s), for the banner. */
+  viewOnlySeasonLabel?: string;
+  /** Games whose season rosters are locked by staff (always empty for staff admins). */
+  lockedGameIds?: string[];
+  /** Name(s) of the locked season(s), for the banner. */
+  lockedSeasonLabel?: string;
+  /** Whether this account has already finished or skipped the guided tour. */
+  tourCompleted: boolean;
 }
 
 export default function SchoolPortalClient({
@@ -48,7 +68,16 @@ export default function SchoolPortalClient({
   initialSubmissions,
   initialRosters,
   initialPlayerPool = [],
+  matches,
+  matchesNowIso,
   selectedGameId: initialGameId,
+  seasonLabel,
+  hasInactiveSeason = false,
+  viewOnlyGameIds = [],
+  viewOnlySeasonLabel = '',
+  lockedGameIds = [],
+  lockedSeasonLabel = '',
+  tourCompleted,
 }: SchoolPortalClientProps) {
   // --- Game Selection Tab ---
   const [selectedGame, setSelectedGame] = useState<string>(initialGameId || 'all');
@@ -109,6 +138,9 @@ export default function SchoolPortalClient({
 
   const filteredRosters =
     selectedGame === 'all' ? rosters : rosters.filter((r) => r.gameId === selectedGame);
+
+  const filteredMatches =
+    selectedGame === 'all' ? matches : matches.filter((m) => m.gameId === selectedGame);
 
   // --- Handlers ---
   const handleCopyLink = async (url: string) => {
@@ -508,7 +540,18 @@ export default function SchoolPortalClient({
   return (
     <div className="space-y-8">
       {/* Top Banner & Title */}
-      <PortalHeader schoolName={activeSchool.schoolName} />
+      <PortalHeader
+        schoolName={activeSchool.schoolName}
+        seasonLabel={seasonLabel}
+        hasInactiveSeason={hasInactiveSeason}
+        actions={
+          <PortalTour
+            tourCompleted={tourCompleted}
+            accountId={_context.userId}
+            schoolName={activeSchool.schoolName}
+          />
+        }
+      />
 
       {/* Game Filter Tabs */}
       <GameTabs
@@ -524,18 +567,19 @@ export default function SchoolPortalClient({
 
       {/* Action Grid: Invite Generator & Approvals Queue */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <div className="lg:col-span-5 space-y-6">
+        <div className="min-w-0 lg:col-span-5 space-y-6">
           <GenerateInviteCard
             games={games}
             schoolId={activeSchool.schoolId}
             schoolSlug={activeSchool.schoolSlug}
             inviteGameId={inviteGameId}
             setInviteGameId={setInviteGameId}
+            viewOnlyGameIds={viewOnlyGameIds}
             onInviteCreated={(newInvite) => setInvites((prev) => [newInvite, ...prev])}
           />
         </div>
 
-        <div className="lg:col-span-7 space-y-4">
+        <div className="min-w-0 lg:col-span-7 space-y-4">
           <PendingApprovalsCard
             submissions={filteredSubmissions}
             rosters={rosters}
@@ -546,6 +590,8 @@ export default function SchoolPortalClient({
             setSelectedRosterMap={setSelectedRosterMap}
             selectedRoleMap={selectedRoleMap}
             setSelectedRoleMap={setSelectedRoleMap}
+            lockedGameIds={lockedGameIds}
+            viewOnlyGameIds={viewOnlyGameIds}
             onApprove={handleApprove}
             onReject={handleReject}
           />
@@ -556,6 +602,11 @@ export default function SchoolPortalClient({
       <RostersSection
         rosters={filteredRosters}
         schoolName={activeSchool.schoolName}
+        lockedGameIds={lockedGameIds}
+        lockedSeasonLabel={lockedSeasonLabel}
+        viewOnlyGameIds={viewOnlyGameIds}
+        viewOnlySeasonLabel={viewOnlySeasonLabel}
+        allGameIds={games.map((g) => g.id)}
         eligibilityResults={eligibilityResults}
         evaluatingRosterId={evaluatingRosterId}
         onOpenCreateRosterModal={() => {
@@ -568,6 +619,15 @@ export default function SchoolPortalClient({
         onUpdateRole={handleUpdateRole}
         onRemovePlayer={handleRemovePlayer}
         onDeleteRoster={handleDeleteRoster}
+      />
+
+      {/* Scheduled matches (read-only) */}
+      <MatchesSection
+        matches={filteredMatches}
+        schoolId={activeSchool.schoolId}
+        viewOnlyGameIds={viewOnlyGameIds}
+        nowIso={matchesNowIso}
+        showGame={selectedGame === 'all' && games.length > 1}
       />
 
       {/* Invites Sent Table */}
@@ -611,7 +671,7 @@ export default function SchoolPortalClient({
       <CreateRosterModal
         isOpen={isCreateRosterOpen}
         schoolName={activeSchool.schoolName}
-        games={games}
+        games={games.filter((g) => !lockedGameIds.includes(g.id) && !viewOnlyGameIds.includes(g.id))}
         defaultGameId={selectedGame}
         isCreating={isCreatingRoster}
         createError={createRosterError}

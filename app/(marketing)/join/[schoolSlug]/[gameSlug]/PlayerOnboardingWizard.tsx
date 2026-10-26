@@ -21,6 +21,7 @@ import { AccountInfoStep } from './components/steps/AccountInfoStep';
 import { DiscordStep } from './components/steps/DiscordStep';
 import { GameIdentityStep } from './components/steps/GameIdentityStep';
 import { DemographicsStep } from './components/steps/DemographicsStep';
+import { ConsentStep } from './components/steps/ConsentStep';
 
 export type { InviteData };
 
@@ -47,6 +48,8 @@ export default function PlayerOnboardingWizard({
       setStep(3);
     } else if (step === 3 && draft.validateStep3()) {
       setStep(4);
+    } else if (step === 4 && draft.validateStep4()) {
+      setStep(5);
     }
   }
 
@@ -58,7 +61,7 @@ export default function PlayerOnboardingWizard({
   }
 
   function handleSubmit() {
-    if (!draft.validateStep4()) {
+    if (!draft.validateStep5()) {
       return;
     }
 
@@ -70,6 +73,7 @@ export default function PlayerOnboardingWizard({
           email: draft.email.trim().toLowerCase(),
           password: isManager ? draft.password : undefined,
           graduationYear: draft.graduationYear,
+          academicYear: isManager ? draft.academicYear : undefined,
           riotId: draft.riotId.trim(),
           discordUsername: draft.discordUsername.trim(),
           inGuild: true,
@@ -89,6 +93,7 @@ export default function PlayerOnboardingWizard({
             feedback: draft.feedback.trim() || undefined,
           },
           codeOfConductAccepted: draft.codeOfConductAccepted,
+          consent: draft.buildConsent(),
         };
 
         const result = await submitPlayerOnboarding({
@@ -200,6 +205,8 @@ export default function PlayerOnboardingWizard({
             setPassword={draft.setPassword}
             graduationYear={draft.graduationYear}
             setGraduationYear={draft.setGraduationYear}
+            academicYear={draft.academicYear}
+            setAcademicYear={draft.setAcademicYear}
             isManager={isManager}
           />
         )}
@@ -259,6 +266,25 @@ export default function PlayerOnboardingWizard({
           />
         )}
 
+        {step === 5 && (
+          <ConsentStep
+            age={draft.age}
+            isMinor={draft.isMinor}
+            tosAcknowledged={draft.tosAcknowledged}
+            setTosAcknowledged={draft.setTosAcknowledged}
+            participantLegalName={draft.participantLegalName}
+            setParticipantLegalName={draft.setParticipantLegalName}
+            guardianFullName={draft.guardianFullName}
+            setGuardianFullName={draft.setGuardianFullName}
+            guardianRelationship={draft.guardianRelationship}
+            setGuardianRelationship={draft.setGuardianRelationship}
+            guardianEmail={draft.guardianEmail}
+            setGuardianEmail={draft.setGuardianEmail}
+            guardianSignature={draft.guardianSignature}
+            setGuardianSignature={draft.setGuardianSignature}
+          />
+        )}
+
         {/* Wizard Navigation Buttons */}
         <div className="mt-8 pt-6 border-t border-border flex items-center justify-between">
           <div>
@@ -275,7 +301,7 @@ export default function PlayerOnboardingWizard({
           </div>
 
           <div className="flex items-center gap-3">
-            {step < 4 ? (
+            {step < 5 ? (
               <button
                 type="button"
                 onClick={handleNext}

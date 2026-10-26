@@ -2,6 +2,8 @@
 
 import { FiShield } from 'react-icons/fi';
 import { CAREER_INTEREST_OPTIONS, RACE_ETHNICITY_OPTIONS } from '../../types';
+import { MIN_BIRTH_DATE } from '@/app/lib/onboarding/consent';
+import { RequiredMark } from '../RequiredMark';
 
 interface DemographicsStepProps {
   birthDate: string;
@@ -98,13 +100,19 @@ export function DemographicsStep({
               htmlFor="demo-birthdate"
               className="block text-xs font-semibold text-foreground-muted mb-1.5"
             >
-              Date of Birth *
+              Date of Birth<RequiredMark />
             </label>
             <input
               id="demo-birthdate"
               type="date"
               value={birthDate}
-              onChange={(e) => setBirthDate(e.target.value)}
+              onChange={(e) => {
+                // Native date inputs accept 5-6 digit years while typing; keep it to 4.
+                if (/^\d{5,}-/.test(e.target.value)) return;
+                setBirthDate(e.target.value);
+              }}
+              min={MIN_BIRTH_DATE}
+              max={new Date().toISOString().slice(0, 10)}
               className="w-full px-3.5 py-2 rounded-lg bg-surface border border-border text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-accent"
               required
             />
@@ -123,7 +131,7 @@ export function DemographicsStep({
               onChange={(e) => setGender(e.target.value)}
               className="w-full px-3.5 py-2 rounded-lg bg-surface border border-border text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-accent"
             >
-              <option value="">Select gender identity...</option>
+              <option value="">Choose an option</option>
               <option value="Male">Male</option>
               <option value="Female">Female</option>
               <option value="Non-binary">Non-binary</option>
@@ -232,7 +240,7 @@ export function DemographicsStep({
               }
               className="w-full px-3.5 py-2 rounded-lg bg-surface border border-border text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-accent"
             >
-              <option value="">Select option...</option>
+              <option value="">Choose an option</option>
               <option value="true">Yes</option>
               <option value="false">No</option>
             </select>
@@ -263,7 +271,7 @@ export function DemographicsStep({
               }
               className="w-full px-3.5 py-2 rounded-lg bg-surface border border-border text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-accent"
             >
-              <option value="">Select option...</option>
+              <option value="">Choose an option</option>
               <option value="true">Yes</option>
               <option value="false">No / Unsure</option>
             </select>
@@ -305,6 +313,7 @@ export function DemographicsStep({
               onChange={(e) => setPing(e.target.value)}
               className="w-full px-3 py-2 rounded-lg bg-surface border border-border text-foreground text-xs focus:outline-none focus:ring-2 focus:ring-accent"
             >
+              <option value="">Choose an option</option>
               <option value="< 20ms">&lt; 20ms</option>
               <option value="20-40ms">20-40ms</option>
               <option value="40-70ms">40-70ms</option>
@@ -325,6 +334,7 @@ export function DemographicsStep({
               onChange={(e) => setHoursPerWeek(e.target.value)}
               className="w-full px-3 py-2 rounded-lg bg-surface border border-border text-foreground text-xs focus:outline-none focus:ring-2 focus:ring-accent"
             >
+              <option value="">Choose an option</option>
               <option value="0-5 hrs">0-5 hrs</option>
               <option value="6-10 hrs">6-10 hrs</option>
               <option value="11-20 hrs">11-20 hrs</option>
@@ -345,6 +355,7 @@ export function DemographicsStep({
               onChange={(e) => setInternetReliability(e.target.value)}
               className="w-full px-3 py-2 rounded-lg bg-surface border border-border text-foreground text-xs focus:outline-none focus:ring-2 focus:ring-accent"
             >
+              <option value="">Choose an option</option>
               <option value="Fiber (Very stable)">Fiber (Very stable)</option>
               <option value="Cable / Broadband (Stable)">Cable / Broadband (Stable)</option>
               <option value="Wi-Fi (Occasional drops)">Wi-Fi (Occasional drops)</option>
@@ -419,7 +430,7 @@ export function DemographicsStep({
             required
           />
           <span className="text-xs text-foreground leading-relaxed">
-            <strong>Code of Conduct & Rules Agreement *:</strong> I have read and agree to abide by the EZ Esports Rulebook, Code of Conduct, and Tournament Regulations. I understand that unsportsmanlike behavior, toxicity, or ringing will result in immediate disqualification.
+            <strong>Code of Conduct & Rules Agreement<RequiredMark />:</strong> I have read and agree to abide by the EZ Esports Rulebook, Code of Conduct, and Tournament Regulations. I understand that unsportsmanlike behavior, toxicity, or ringing will result in immediate disqualification.
           </span>
         </label>
       </div>

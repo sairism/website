@@ -23,18 +23,28 @@ import {
 import { alias, unionAll } from 'drizzle-orm/pg-core';
 import {
   COMBINED_DIVISION,
+  FINISHED_MATCH_STATUSES,
   canonicalDivision,
   clampPageLimit,
   normalizeSort,
   type CanonicalDivision,
   type HubDivision,
   type MatchesPage,
+  type MatchTab,
+  type MatchTabCounts,
   type MatchesPageParams,
   type StandingsFormat,
 } from './match-page';
 import { FORM_LENGTH, buildFormGuide, type FormOutcome } from '@/app/lib/game-hub-form';
 import { getActiveSeasonForGame, getSeasonsWithGames } from './league';
-import { canonicalDivisionSql, hubDivisionSql, getGameSeasonSummary } from './standings';
+import {
+  canonicalDivisionSql,
+  getGameSeasonSummary,
+  getOutcomesPublicSeasonIds,
+  hubDivisionSql,
+} from './standings';
+import { redactHiddenMatches } from '../season-outcomes';
+import type { SchoolMatchRow } from '../school-matches';
 import { canonicalGameSlug, dbGameSlug } from '../constants';
 
 /** Default page size for public-facing paginated lists. */
@@ -64,6 +74,47 @@ const awayTeam = alias(schema.teams, 'away_team');
 const homeSchool = alias(schema.schools, 'home_school');
 const awaySchool = alias(schema.schools, 'away_school');
 
+/** The SQL mirror of `matchTabOf` (match-page.ts); keep the two in step. */
+export function matchTabCondition(tab: MatchTab, now: Date): SQL | undefined {
+  switch (tab) {
+    case 'needs-results':
+      return and(eq(schema.matches.status, 'scheduled'), lt(schema.matches.scheduledAt, now));
+    case 'upcoming':
+      return or(
+        eq(schema.matches.status, 'live'),
+        and(eq(schema.matches.status, 'scheduled'), gte(schema.matches.scheduledAt, now))
+      );
+    case 'completed':
+      return inArray(schema.matches.status, [...FINISHED_MATCH_STATUSES]);
+    default:
+      return undefined;
+  }
+}
+
+/** Every facet except the tab, sort and cursor: shared by the page query and the tab counts. */
+function facetConditions(params: MatchesPageParams): SQL[] {
+  const conditions: SQL[] = [];
+  if (params.seasonId) conditions.push(eq(schema.matches.seasonId, params.seasonId));
+  if (params.gameId) conditions.push(eq(schema.seasons.gameId, params.gameId));
+  if (params.division && params.division !== COMBINED_DIVISION) {
+    const targetDiv = canonicalDivision(params.division);
+    conditions.push(
+      or(
+        eq(canonicalDivisionSql(homeRoster.division), targetDiv),
+        eq(canonicalDivisionSql(awayRoster.division), targetDiv)
+      )!
+    );
+  }
+  if (params.status) conditions.push(eq(schema.matches.status, params.status));
+  if (params.from) conditions.push(gte(schema.matches.scheduledAt, params.from));
+  if (params.to) conditions.push(lte(schema.matches.scheduledAt, params.to));
+  if (params.search) {
+    const pattern = `%${params.search.replace(/[%_\\]/g, '\\$&')}%`;
+    conditions.push(or(ilike(homeSchool.name, pattern), ilike(awaySchool.name, pattern))!);
+  }
+  return conditions;
+}
+
 /**
  * Keyset-paginated match list with division + school names joined in.
  * Sorted by (scheduledAt, id); `cursor` is the sort key of the last row of
@@ -74,30 +125,16 @@ export function buildMatchesPageQuery(params: MatchesPageParams) {
   const sort = normalizeSort(params.sort);
   const limit = clampPageLimit(params.limit, DEFAULT_PAGE_SIZE);
 
-  const conditions = [];
-  if (params.seasonId) conditions.push(eq(schema.matches.seasonId, params.seasonId));
-  if (params.gameId) conditions.push(eq(schema.seasons.gameId, params.gameId));
-  if (params.division && params.division !== COMBINED_DIVISION) {
-    const targetDiv = canonicalDivision(params.division);
-    conditions.push(
-      or(
-        eq(canonicalDivisionSql(homeRoster.division), targetDiv),
-        eq(canonicalDivisionSql(awayRoster.division), targetDiv)
-      )
-    );
-  }
-  if (params.status) conditions.push(eq(schema.matches.status, params.status));
-  if (params.from) conditions.push(gte(schema.matches.scheduledAt, params.from));
-  if (params.to) conditions.push(lte(schema.matches.scheduledAt, params.to));
-  if (params.search) {
-    const pattern = `%${params.search.replace(/[%_\\]/g, '\\$&')}%`;
-    conditions.push(or(ilike(homeSchool.name, pattern), ilike(awaySchool.name, pattern)));
+  const conditions: SQL[] = facetConditions(params);
+  if (params.tab) {
+    const tabCondition = matchTabCondition(params.tab, params.now ?? new Date());
+    if (tabCondition) conditions.push(tabCondition);
   }
   if (params.cursor) {
     const ts = new Date(params.cursor.scheduledAt);
     const { id } = params.cursor;
     conditions.push(
-      sort === 'desc'
+      (sort === 'desc'
         ? or(
             lt(schema.matches.scheduledAt, ts),
             and(eq(schema.matches.scheduledAt, ts), lt(schema.matches.id, id))
@@ -105,7 +142,7 @@ export function buildMatchesPageQuery(params: MatchesPageParams) {
         : or(
             gt(schema.matches.scheduledAt, ts),
             and(eq(schema.matches.scheduledAt, ts), gt(schema.matches.id, id))
-          )
+          ))!
     );
   }
 
@@ -152,6 +189,54 @@ export async function getMatchesPage(params: MatchesPageParams): Promise<Matches
   };
 }
 
+/**
+ * Per-tab totals for the staff Matches page, over the same facets (game, season,
+ * division, search) as the list and one consistent `now`, so a tab's badge equals
+ * the number of rows paging through that tab will deliver. Staff only: raw
+ * (unredacted) statuses, like `getMatchesPage`.
+ */
+export async function getMatchTabCounts(
+  params: Omit<MatchesPageParams, 'tab' | 'cursor' | 'sort' | 'limit'>
+): Promise<MatchTabCounts> {
+  const now = params.now ?? new Date();
+  const conditions = facetConditions(params);
+  const tally = (tab: Exclude<MatchTab, 'all'>) =>
+    sql<number>`count(*) filter (where ${matchTabCondition(tab, now)})`.mapWith(Number);
+  const [row] = await db
+    .select({
+      all: sql<number>`count(*)`.mapWith(Number),
+      needsResults: tally('needs-results'),
+      upcoming: tally('upcoming'),
+      completed: tally('completed'),
+    })
+    .from(schema.matches)
+    .innerJoin(schema.seasons, eq(schema.matches.seasonId, schema.seasons.id))
+    .innerJoin(homeRoster, eq(schema.matches.homeRosterId, homeRoster.id))
+    .innerJoin(homeTeam, eq(homeRoster.teamId, homeTeam.id))
+    .innerJoin(homeSchool, eq(homeTeam.schoolId, homeSchool.id))
+    .innerJoin(awayRoster, eq(schema.matches.awayRosterId, awayRoster.id))
+    .innerJoin(awayTeam, eq(awayRoster.teamId, awayTeam.id))
+    .innerJoin(awaySchool, eq(awayTeam.schoolId, awaySchool.id))
+    .where(conditions.length ? and(...conditions) : undefined);
+  return {
+    'needs-results': row?.needsResults ?? 0,
+    upcoming: row?.upcoming ?? 0,
+    completed: row?.completed ?? 0,
+    all: row?.all ?? 0,
+  };
+}
+
+/**
+ * Public schedule page: same rows, but a season whose outcomes are not
+ * published has its scores, MVP, notes and forfeit flag stripped here. Public
+ * code must use this (and `getPublicSeasonMatches`), not the raw
+ * `getMatchesPage`, which is for staff views.
+ */
+export async function getPublicMatchesPage(params: MatchesPageParams): Promise<MatchesPage> {
+  const [page, publicIds] = await Promise.all([getMatchesPage(params), getOutcomesPublicSeasonIds()]);
+  return { ...page, items: redactHiddenMatches(page.items, publicIds) };
+}
+
 export function buildSeasonMatchesQuery(seasonId: string, division?: string) {
   const conditions = [eq(schema.matches.seasonId, seasonId)];
   if (division && division !== COMBINED_DIVISION) {
@@ -194,6 +279,65 @@ export function buildSeasonMatchesQuery(seasonId: string, division?: string) {
  */
 export async function getSeasonMatches(seasonId: string, division?: string) {
   return buildSeasonMatchesQuery(seasonId, division);
+}
+
+/** Public counterpart of `getSeasonMatches`; see `getPublicMatchesPage`. */
+export async function getPublicSeasonMatches(seasonId: string, division?: string) {
+  const [matches, publicIds] = await Promise.all([
+    getSeasonMatches(seasonId, division),
+    getOutcomesPublicSeasonIds(),
+  ]);
+  return redactHiddenMatches(matches, publicIds);
+}
+
+/**
+ * Every match a school plays in (either side), oldest first, with raw outcomes. `seasonIds`
+ * restricts to those seasons (a manager's resolved seasons); omit it for a staff admin. Callers
+ * that are not staff must redact unpublished outcomes themselves (`redactHiddenMatches`).
+ */
+export async function getSchoolMatchRows(params: {
+  schoolId: string;
+  seasonIds?: string[];
+  gameId?: string;
+}): Promise<SchoolMatchRow[]> {
+  const conditions: SQL[] = [
+    or(eq(homeTeam.schoolId, params.schoolId), eq(awayTeam.schoolId, params.schoolId))!,
+    // A removed school's fixtures are hidden everywhere else, so the opponent's manager must not
+    // keep seeing a match against it.
+    isNull(homeSchool.deletedAt),
+    isNull(awaySchool.deletedAt),
+  ];
+  if (params.seasonIds) conditions.push(inArray(schema.matches.seasonId, params.seasonIds));
+  if (params.gameId) conditions.push(eq(schema.seasons.gameId, params.gameId));
+
+  return db
+    .select({
+      id: schema.matches.id,
+      seasonId: schema.matches.seasonId,
+      seasonName: schema.seasons.name,
+      gameId: schema.games.id,
+      gameName: schema.games.displayName,
+      scheduledAt: schema.matches.scheduledAt,
+      status: schema.matches.status,
+      homeScore: schema.matches.homeScore,
+      awayScore: schema.matches.awayScore,
+      division: canonicalDivisionSql(homeRoster.division),
+      homeSchoolId: homeSchool.id,
+      homeSchoolName: homeSchool.name,
+      awaySchoolId: awaySchool.id,
+      awaySchoolName: awaySchool.name,
+    })
+    .from(schema.matches)
+    .innerJoin(schema.seasons, eq(schema.matches.seasonId, schema.seasons.id))
+    .innerJoin(schema.games, eq(schema.seasons.gameId, schema.games.id))
+    .innerJoin(homeRoster, eq(schema.matches.homeRosterId, homeRoster.id))
+    .innerJoin(homeTeam, eq(homeRoster.teamId, homeTeam.id))
+    .innerJoin(homeSchool, eq(homeTeam.schoolId, homeSchool.id))
+    .innerJoin(awayRoster, eq(schema.matches.awayRosterId, awayRoster.id))
+    .innerJoin(awayTeam, eq(awayRoster.teamId, awayTeam.id))
+    .innerJoin(awaySchool, eq(awayTeam.schoolId, awaySchool.id))
+    .where(and(...conditions))
+    .orderBy(asc(schema.matches.scheduledAt), asc(schema.matches.id));
 }
 
 /** Count of all scheduled matches (for dashboard). */
@@ -250,6 +394,8 @@ export const getCachedRecentResults = unstable_cache(
       .innerJoin(awaySchool, eq(awayTeam.schoolId, awaySchool.id))
       .where(
         and(
+          // Seasons whose outcomes staff have not published contribute nothing.
+          isNotNull(schema.seasons.outcomesFinalizedAt),
           inArray(schema.matches.status, ['completed', 'forfeit']),
           isNotNull(schema.matches.homeScore),
           isNotNull(schema.matches.awayScore),
@@ -352,7 +498,8 @@ export async function getArchiveIndex() {
   const championBySeason = pickChampionsBySeason(champions);
 
   return seasons.map((s) => {
-    const c = championBySeason.get(s.id);
+    // No champion until staff publish the season's outcomes.
+    const c = s.outcomesPublic ? championBySeason.get(s.id) : undefined;
     return {
       ...s,
       matchCount: countBySeason.get(s.id) ?? 0,
@@ -439,6 +586,10 @@ export function buildFormGuideQuery(opts: {
           inArray(schema.matches.status, ['completed', 'forfeit']),
           isNotNull(schema.matches.homeScore),
           isNotNull(schema.matches.awayScore),
+          // The strip sits beside the regular-season W-L. A playoff counts on
+          // the schedule and in recent results, and it does not take a chip
+          // that belongs to a regular-season game.
+          eq(schema.matches.countsForStandings, true),
           isNull(homeSchool.deletedAt),
           isNull(awaySchool.deletedAt)
         )
@@ -482,16 +633,19 @@ export interface GameHubData {
     result: string;
     forfeit: boolean;
   }[];
+  /** Stat fields are null (and the list alphabetical) while `outcomesPublic` is false. */
   topTeams: {
-    rank: number;
+    rank: number | null;
     team: string;
     teamLabel: string;
     division: CanonicalDivision;
-    wins: number;
-    losses: number;
-    winPct: number;
+    wins: number | null;
+    losses: number | null;
+    winPct: number | null;
     form: FormOutcome[];
   }[];
+  /** False when the active season's outcomes are unpublished; results and form are then empty. */
+  outcomesPublic: boolean;
   seasonName: string | null;
   standingsFormat: StandingsFormat;
   standingsReconstructed: boolean;
@@ -508,6 +662,7 @@ export async function getGameHubData(
   let seasonName: string | null = null;
   let standingsFormat: StandingsFormat = 'divided';
   let standingsReconstructed = false;
+  let outcomesPublic = true;
 
   const gameRow = await db
     .select()
@@ -555,9 +710,11 @@ export async function getGameHubData(
 
       standingsFormat = summary.standingsFormat;
       standingsReconstructed = summary.standingsReconstructed;
+      outcomesPublic = summary.outcomesPublic;
       const shownTeams = summary.topTeamsByDivision[division];
 
       const formRows =
+        !outcomesPublic ||
         summary.standingsSource[division] === 'snapshot' ||
         summary.standingsFormat === 'combined' ||
         shownTeams.length === 0
@@ -588,7 +745,9 @@ export async function getGameHubData(
         };
       }
 
-      recentResults = completedRows.map((r) => {
+      // `completedRows` is fetched in parallel with the summary, so it is
+      // dropped (not never-fetched) when the summary reports hidden outcomes.
+      recentResults = (outcomesPublic ? completedRows : []).map((r) => {
         const home = r.homeScore ?? 0;
         const away = r.awayScore ?? 0;
         const outcome: FormOutcome = home > away ? 'W' : home < away ? 'L' : 'D';
@@ -615,6 +774,7 @@ export async function getGameHubData(
     seasonName,
     standingsFormat,
     standingsReconstructed,
+    outcomesPublic,
     division,
   };
 }

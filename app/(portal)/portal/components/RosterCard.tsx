@@ -16,6 +16,8 @@ import type {
 
 interface RosterCardProps {
   roster: SchoolRosterDetails;
+  /** The roster's season is locked by staff or is an inactive (view-only) season: every change control is disabled. */
+  locked?: boolean;
   gateResult?: RosterEligibilityResult;
   isEvaluating: boolean;
   onOpenEnrollModal: (roster: SchoolRosterDetails) => void;
@@ -32,6 +34,7 @@ interface RosterCardProps {
 
 export function RosterCard({
   roster,
+  locked = false,
   gateResult,
   isEvaluating,
   onOpenEnrollModal,
@@ -42,12 +45,14 @@ export function RosterCard({
   onDeleteRoster,
 }: RosterCardProps) {
   return (
-    <div className="p-5 sm:p-6 rounded-2xl bg-zinc-900/80 border border-zinc-800 shadow-lg space-y-4">
-      <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
-        <div>
-          <div className="flex items-center gap-2">
-            <h3 className="text-lg font-bold text-white">{roster.name}</h3>
-            <span className="text-xs font-semibold px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
+    <div className="min-w-0 p-4 sm:p-6 rounded-2xl bg-zinc-900/80 border border-zinc-800 shadow-lg space-y-4">
+      {/* Title block and action row wrap instead of sharing one line, so the badge can
+          never collide with the buttons at any card width (two-up grids make cards narrow). */}
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3 pb-3 border-b border-zinc-800">
+        <div className="min-w-0 flex-1 basis-56">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <h3 className="min-w-0 text-lg font-bold text-white break-words">{roster.name}</h3>
+            <span className="shrink-0 text-xs font-semibold px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 whitespace-nowrap">
               {roster.gameName} &bull; Division {roster.division}
             </span>
           </div>
@@ -56,33 +61,36 @@ export function RosterCard({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             onPress={() => onOpenEnrollModal(roster)}
-            className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+            isDisabled={locked}
+            className="min-h-[44px] sm:min-h-0 px-3 py-1.5 text-xs font-semibold rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <HiOutlineUserPlus className="w-3.5 h-3.5 text-emerald-400" />
+            <HiOutlineUserPlus className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             <span>Enroll Player</span>
           </Button>
           <Button
             onPress={() => onOpenSwapModal(roster)}
-            className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+            isDisabled={locked}
+            className="min-h-[44px] sm:min-h-0 px-3 py-1.5 text-xs font-semibold rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <HiOutlineArrowsRightLeft className="w-3.5 h-3.5 text-amber-400" />
+            <HiOutlineArrowsRightLeft className="w-3.5 h-3.5 text-amber-400 shrink-0" />
             <span>Emergency Sub</span>
           </Button>
           <Button
             onPress={() => onCheckRosterGate(roster.id)}
             isDisabled={isEvaluating}
-            className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#f4cccc] hover:bg-[#e6b8b8] text-zinc-950 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            className="min-h-[44px] sm:min-h-0 px-3 py-1.5 text-xs font-bold rounded-lg bg-[#f4cccc] hover:bg-[#e6b8b8] text-zinc-950 transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap disabled:opacity-50"
           >
-            {isEvaluating ? 'Evaluating...' : 'Run Roster Gate'}
+            {isEvaluating ? 'Checking...' : 'Check Eligibility'}
           </Button>
           {roster.players.length === 0 && onDeleteRoster && (
             <Button
               onPress={() => onDeleteRoster(roster.id)}
+              isDisabled={locked}
               aria-label="Delete empty roster"
-              className="p-1.5 text-zinc-500 hover:text-rose-400 hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-rose-900/50"
+              className="shrink-0 p-1.5 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 flex items-center justify-center text-zinc-500 hover:text-rose-400 hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-rose-900/50 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <HiOutlineTrash className="w-4 h-4" />
             </Button>
@@ -91,15 +99,15 @@ export function RosterCard({
       </div>
 
       {/* Players Table */}
-      <div className="overflow-x-auto">
+      <div>
         <table className="w-full text-left text-xs">
           <thead>
             <tr className="text-zinc-500 border-b border-zinc-800/80">
-              <th className="pb-2 font-semibold">Player</th>
-              <th className="pb-2 font-semibold">Role</th>
-              <th className="pb-2 font-semibold">In-Game Name</th>
-              <th className="pb-2 font-semibold">Discord</th>
-              <th className="pb-2 font-semibold">Server</th>
+              <th className="pb-2 pr-3 font-semibold">Player</th>
+              <th className="pb-2 pr-3 font-semibold">Role</th>
+              <th className="pb-2 pr-3 font-semibold">In-Game Name</th>
+              <th className="pb-2 pr-3 font-semibold">Discord</th>
+              <th className="pb-2 pr-3 font-semibold">Server</th>
               <th className="pb-2 font-semibold text-right">Actions</th>
             </tr>
           </thead>
@@ -113,10 +121,11 @@ export function RosterCard({
             ) : (
               roster.players.map((p) => (
                 <tr key={p.id} className="hover:bg-zinc-800/20">
-                  <td className="py-2.5 font-medium text-white">{p.playerName}</td>
-                  <td className="py-2.5">
+                  <td className="py-2.5 pr-3 font-medium text-white">{p.playerName}</td>
+                  <td className="py-2.5 pr-3 whitespace-nowrap">
                     <select
                       value={p.isCaptain ? 'captain' : p.role}
+                      disabled={locked}
                       onChange={(e) =>
                         onUpdateRole(
                           roster.id,
@@ -124,7 +133,7 @@ export function RosterCard({
                           e.target.value as 'player' | 'sub' | 'captain'
                         )
                       }
-                      className={`px-2 py-0.5 text-[10px] font-bold rounded border cursor-pointer focus:outline-none ${
+                      className={`px-2 py-1 text-[10px] font-bold rounded border cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 focus:outline-none ${
                         p.isCaptain || p.role === 'captain'
                           ? 'bg-amber-400/10 text-amber-400 border-amber-400/20'
                           : p.role === 'sub'
@@ -137,9 +146,9 @@ export function RosterCard({
                       <option value="captain">★ Captain</option>
                     </select>
                   </td>
-                  <td className="py-2.5 font-mono text-zinc-300">{p.ign}</td>
-                  <td className="py-2.5 font-mono text-zinc-400">{p.discordUsername}</td>
-                  <td className="py-2.5">
+                  <td className="py-2.5 pr-3 font-mono text-zinc-300 break-all">{p.ign}</td>
+                  <td className="py-2.5 pr-3 font-mono text-zinc-400 break-all">{p.discordUsername}</td>
+                  <td className="py-2.5 pr-3">
                     {p.inGuild ? (
                       <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-semibold">
                         <HiOutlineCheckCircle className="w-3.5 h-3.5" />
@@ -155,8 +164,9 @@ export function RosterCard({
                   <td className="py-2.5 text-right">
                     <Button
                       onPress={() => onRemovePlayer(roster.id, p.id)}
+                      isDisabled={locked}
                       aria-label={`Remove ${p.playerName} from ${roster.name}`}
-                      className="p-1 rounded text-zinc-500 hover:text-rose-400 hover:bg-rose-950/30 transition-colors cursor-pointer"
+                      className="p-2.5 -m-1.5 rounded text-zinc-500 hover:text-rose-400 hover:bg-rose-950/30 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       <HiOutlineTrash className="w-3.5 h-3.5" />
                     </Button>
@@ -171,7 +181,7 @@ export function RosterCard({
       {/* 5-Point Validation Gate Widget */}
       {gateResult ? (
         <div className="pt-3 border-t border-zinc-800/80 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-bold text-white uppercase tracking-wider">
               5-Point Tournament Validation Gate
             </span>
@@ -196,7 +206,7 @@ export function RosterCard({
               ) : (
                 <HiOutlineXCircle className="w-4 h-4 text-rose-400 shrink-0" />
               )}
-              <span>
+              <span className="min-w-0">
                 Size: {gateResult.stats.startersCount} Starters + {gateResult.stats.subsCount} Sub (Min 6)
               </span>
             </div>

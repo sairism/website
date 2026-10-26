@@ -1,9 +1,4 @@
-import type {
-  CompetitiveRole,
-  SchoolPlayerPoolItem,
-  SchoolRosterWithPlayers,
-  PlayerSubmissionDraft,
-} from '../domain/types';
+import type { PlayerSubmissionDraft } from '../domain/types';
 
 // ============================================================================
 // HEXAGONAL ARCHITECTURE: REPOSITORY (DRIVEN) PORT
@@ -26,8 +21,7 @@ export interface GameRecord {
 export interface PlayerInviteRecord {
   id: string;
   schoolId: string;
-  gameId: string | null;
-  role: string;
+  gameId: string;
   tokenHash: string;
   intendedFirstName: string;
   intendedLastName: string;
@@ -41,6 +35,23 @@ export interface PlayerInviteRecord {
   createdAt: Date | string;
 }
 
+export interface ManagerInviteRecord {
+  id: string;
+  schoolId: string;
+  tokenHash: string;
+  intendedFirstName: string;
+  intendedLastName: string;
+  invitedByUserId: string;
+  status: string;
+  submissionDraft: Record<string, unknown> | null;
+  expiresAt: Date | string | null;
+  submittedAt: Date | string | null;
+  reviewedAt: Date | string | null;
+  rejectionReason: string | null;
+  memberId: string | null;
+  createdAt: Date | string;
+}
+
 export interface SchoolManagerRecord {
   id: string;
   schoolId: string;
@@ -50,6 +61,7 @@ export interface SchoolManagerRecord {
   academicYear: string;
   isPrimaryContact: boolean;
   isActive: boolean;
+  tourCompletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -71,69 +83,10 @@ export interface OnboardingRepositoryPort {
   findGameById(gameId: string): Promise<GameRecord | null>;
   findGameBySlug(slug: string): Promise<GameRecord | null>;
 
-  // Roster & Player queries
-  findSchoolRosters(schoolId: string, gameIds?: string[] | null): Promise<SchoolRosterWithPlayers[]>;
-  findSchoolPlayerPool(schoolId: string, gameId?: string): Promise<SchoolPlayerPoolItem[]>;
-  findRosterById(rosterId: string): Promise<{ id: string; schoolId: string; gameId: string; name: string } | null>;
-
   // Invite operations
   findInviteByTokenHash(tokenHash: string): Promise<PlayerInviteRecord | null>;
-  findInviteById(inviteId: string): Promise<PlayerInviteRecord | null>;
-  createPlayerInvite(params: {
-    schoolId: string;
-    gameId: string;
-    tokenHash: string;
-    intendedFirstName: string;
-    intendedLastName: string;
-    invitedByUserId: string;
-    expiresAt: Date;
-  }): Promise<PlayerInviteRecord>;
   updateInviteDraft(inviteId: string, draft: Partial<PlayerSubmissionDraft>): Promise<void>;
   submitInvite(inviteId: string, finalDraft: PlayerSubmissionDraft): Promise<void>;
-  listSchoolInvites(schoolId: string, gameId?: string): Promise<PlayerInviteRecord[]>;
-  listPendingSubmissions(schoolId: string, gameId?: string): Promise<PlayerInviteRecord[]>;
-  revokePlayerInvite(inviteId: string): Promise<void>;
-
-  // Approval & Roster mutations
-  approveInviteAndEnroll(params: {
-    inviteId: string;
-    schoolId: string;
-    gameId: string;
-    draft: PlayerSubmissionDraft;
-    targetRosterId?: string | null;
-    competitiveRole: CompetitiveRole;
-  }): Promise<{
-    memberId: string;
-    playerId?: string;
-    demographicsId: string;
-    identityId?: string;
-  }>;
-
-  enrollPlayerToRoster(params: {
-    rosterId: string;
-    schoolId: string;
-    gameId: string;
-    memberId: string;
-    ign?: string | null;
-    role: CompetitiveRole;
-  }): Promise<{ playerId: string; rosterId: string; memberId: string; role: string; isCaptain: boolean }>;
-
-  updateRosterPlayerRole(params: {
-    rosterId: string;
-    playerId: string;
-    role: CompetitiveRole;
-  }): Promise<{ success: boolean }>;
-
-  removePlayerFromRoster(params: {
-    rosterId: string;
-    playerId: string;
-  }): Promise<{ success: boolean }>;
-
-  emergencySwapSub(params: {
-    rosterId: string;
-    currentStarterId: string;
-    substitutePlayerId: string;
-  }): Promise<{ success: boolean }>;
 
   // Manager provisioning
   findSchoolManagers(schoolId: string): Promise<any[]>;
@@ -158,8 +111,8 @@ export interface OnboardingRepositoryPort {
     invitedByUserId: string;
     expiresAt: Date;
     draft?: Record<string, unknown>;
-  }): Promise<PlayerInviteRecord>;
-  listSchoolManagerInvites(schoolId: string): Promise<PlayerInviteRecord[]>;
+  }): Promise<ManagerInviteRecord>;
+  listSchoolManagerInvites(schoolId: string): Promise<ManagerInviteRecord[]>;
   revokeManagerInvite(inviteId: string): Promise<void>;
 
   // Audit
